@@ -55,7 +55,8 @@ function App() {
     let timer: ReturnType<typeof setTimeout>;
     const controller = new AbortController();
     async function poll() {
-      let delay = 5000;
+      if (document.hidden) return;
+      let delay = 60_000;
       const ticket = ++requestSequence.current;
       try {
         const updated = await request<Status>('/api/status', controller.signal);
@@ -64,15 +65,27 @@ function App() {
           setStatus(updated);
           setStatusError('');
         }
-        delay = updated.state === 'refreshing' ? 750 : 5000;
+        delay = updated.state === 'refreshing' ? 1500 : 60_000;
       } catch (error) {
         if (controller.signal.aborted) return;
         if (ticket === requestSequence.current) setStatusError((error as Error).message);
       }
-      if (!controller.signal.aborted) timer = setTimeout(poll, delay);
+      if (!controller.signal.aborted && !document.hidden) {
+        clearTimeout(timer);
+        timer = setTimeout(poll, delay);
+      }
     }
+    const visibilityChanged = () => {
+      clearTimeout(timer);
+      if (!document.hidden) void poll();
+    };
+    document.addEventListener('visibilitychange', visibilityChanged);
     void poll();
-    return () => { controller.abort(); clearTimeout(timer); };
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', visibilityChanged);
+    };
   }, [loading]);
 
   useEffect(() => {

@@ -1,4 +1,9 @@
 node_modules/
 dist/
 .hyperlens/
+.vercel/
+.env
+.env.*
 mjos_client_list_cleaned.csv
+.vercel
+.env*

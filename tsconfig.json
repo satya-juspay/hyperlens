@@ -10,5 +10,5 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["server", "shared", "client"]
+  "include": ["server", "shared", "client", "api"]
 }

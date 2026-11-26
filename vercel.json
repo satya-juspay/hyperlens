@@ -1,0 +1,17 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "npm run build:vercel",
+  "outputDirectory": "dist/vercel",
+  "functions": {
+    "api/handler.ts": { "maxDuration": 300, "includeFiles": "public/index.html" }
+  },
+  "rewrites": [
+    { "source": "/", "destination": "/api/handler?__hl_endpoint=home" },
+    { "source": "/index.html", "destination": "/api/handler?__hl_endpoint=home" },
+    { "source": "/api/configurations/suggestions", "destination": "/api/handler?__hl_endpoint=configurations" },
+    { "source": "/api/results/:id", "destination": "/api/handler?__hl_endpoint=result&__hl_id=:id" },
+    { "source": "/api/search.csv", "destination": "/api/handler?__hl_endpoint=export" },
+    { "source": "/api/:action(status|health|clients|configurations|search|refresh)", "destination": "/api/handler?__hl_endpoint=:action" }
+  ]
+}

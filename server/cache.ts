@@ -1,6 +1,6 @@
 import { createReadStream, createWriteStream } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { Readable } from 'node:stream';
@@ -23,10 +23,53 @@ export interface Snapshot {
   failed: boolean;
 }
 
+export interface SnapshotCache {
+  prepare(): Promise<void>;
+  read(): Promise<Snapshot | undefined>;
+  write(snapshot: Snapshot, previousVersion?: string): Promise<void>;
+  putRaw(hash: string, text: string): Promise<void>;
+}
+
 const gzipText = promisify(gzip);
 const schema = 1;
 
-export class DiskCache {
+export function* snapshotLines(snapshot: Snapshot): Generator<string> {
+  const { mjos, configs, ...state } = snapshot;
+  yield JSON.stringify(['snapshot', { ...state, schema }]) + '\n';
+  for (const row of mjos) yield JSON.stringify(['mjos', row]) + '\n';
+  for (const config of configs) yield JSON.stringify(['config', config]) + '\n';
+}
+
+export async function decodeSnapshot(source: Readable): Promise<Snapshot | undefined> {
+  const mjos: MjosRecord[] = [];
+  const configs: ConfigRecord[] = [];
+  let manifest: Omit<Snapshot, 'mjos' | 'configs'> | undefined;
+  const gunzip = createGunzip();
+  const lines = createInterface({ input: gunzip, crlfDelay: Infinity });
+  const done = pipeline(source, gunzip).catch(error => error as NodeJS.ErrnoException);
+  let invalid: unknown;
+  try {
+    for await (const line of lines) {
+      const [kind, value] = JSON.parse(line);
+      if (kind === 'snapshot' && value.schema === schema && !manifest) manifest = value;
+      else if (kind === 'mjos') mjos.push(value);
+      else if (kind === 'config') configs.push(value);
+      else throw new Error('Cache format is unsupported.');
+    }
+  } catch (error) {
+    invalid = error;
+    source.destroy();
+    gunzip.destroy();
+  }
+  const streamError = await done;
+  if (streamError?.code === 'ENOENT') return undefined;
+  if (invalid) throw invalid;
+  if (streamError) throw streamError;
+  if (!manifest) throw new Error('Cache manifest is missing.');
+  return { ...manifest, mjos, configs };
+}
+
+export class DiskCache implements SnapshotCache {
   constructor(private readonly dir: string) {}
 
   async prepare(): Promise<void> {
@@ -50,46 +93,19 @@ export class DiskCache {
   }
 
   async read(): Promise<Snapshot | undefined> {
-    const mjos: MjosRecord[] = [];
-    const configs: ConfigRecord[] = [];
-    let manifest: Omit<Snapshot, 'mjos' | 'configs'> | undefined;
-    const source = createReadStream(join(this.dir, 'snapshot.ndjson.gz'));
-    const gunzip = createGunzip();
-    const lines = createInterface({ input: gunzip, crlfDelay: Infinity });
-    const done = pipeline(source, gunzip).catch(error => error as NodeJS.ErrnoException);
-    let invalid: unknown;
-    try {
-      for await (const line of lines) {
-        const [kind, value] = JSON.parse(line);
-        if (kind === 'snapshot' && value.schema === schema) manifest = value;
-        else if (kind === 'mjos') mjos.push(value);
-        else if (kind === 'config') configs.push(value);
-        else throw new Error('Cache format is unsupported.');
-      }
-    } catch (error) {
-      invalid = error;
-      source.destroy();
-      gunzip.destroy();
-    }
-    const streamError = await done;
-    if (streamError?.code === 'ENOENT') return undefined;
-    if (invalid) throw invalid;
-    if (streamError) throw streamError;
-    if (!manifest) throw new Error('Cache manifest is missing.');
-    return { ...manifest, mjos, configs };
+    return decodeSnapshot(createReadStream(join(this.dir, 'snapshot.ndjson.gz')));
+  }
+
+  async readCompressedRaw(hash: string): Promise<Uint8Array> {
+    if (!/^[a-f0-9]{64}$/.test(hash)) throw new Error('Invalid cached hyperpay-config hash.');
+    return Uint8Array.from(await readFile(join(this.dir, 'raw', hash + '.js.gz')));
   }
 
   async write(snapshot: Snapshot): Promise<void> {
     const destination = join(this.dir, 'snapshot.ndjson.gz');
     const temp = destination + '.' + process.pid + '.tmp';
-    const { mjos, configs, ...state } = snapshot;
-    function* lines() {
-      yield JSON.stringify(['snapshot', { ...state, schema }]) + '\n';
-      for (const row of mjos) yield JSON.stringify(['mjos', row]) + '\n';
-      for (const config of configs) yield JSON.stringify(['config', config]) + '\n';
-    }
     try {
-      await pipeline(Readable.from(lines()), createGzip({ level: 3 }), createWriteStream(temp, { mode: 0o600 }));
+      await pipeline(Readable.from(snapshotLines(snapshot)), createGzip({ level: 3 }), createWriteStream(temp, { mode: 0o600 }));
       await rename(temp, destination);
     } catch (error) {
       await rm(temp, { force: true }).catch(() => undefined);

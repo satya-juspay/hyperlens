@@ -8,19 +8,25 @@
   },
   "scripts": {
     "build": "tsc && node scripts/build-client.mjs",
-    "start": "node dist/server/main.js",
+    "build:vercel": "tsc && node scripts/build-client.mjs --vercel",
+    "start": "node --env-file-if-exists=.env.local dist/server/main.js",
     "dev": "npm run build && npm start",
+    "db:import": "node --env-file-if-exists=.env.local dist/server/import-postgres.js",
+    "db:prepare-vercel": "node --env-file-if-exists=.env.local dist/server/prepare-vercel.js",
     "test": "npm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {
+    "@vercel/functions": "3.11.4",
     "acorn": "8.19.0",
     "csv-parse": "6.1.0",
     "lucide-react": "1.48.0",
+    "pg": "8.23.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
     "@types/node": "20.5.1",
+    "@types/pg": "8.15.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "esbuild": "0.25.12",

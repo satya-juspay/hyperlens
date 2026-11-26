@@ -23,9 +23,38 @@ The default server is loopback-only. For internal shared hosting, set `HYPERLENS
 | `HYPERLENS_WIDGET_ROOT` | `../hyper-widget` |
 | `HYPERLENS_READER_ROOT` | `../config-reader` |
 | `HYPERLENS_HOST` / `HYPERLENS_PORT` | `127.0.0.1` / `4173` |
-| `HYPERLENS_AUTH` | Optional `username:password`; required for non-loopback binding |
+| `HYPERLENS_AUTH` | Optional `username:password` for Vercel. Required for the standalone server when binding to a non-loopback address. |
 | `HYPERLENS_CONCURRENCY` | `15` concurrent requests, configurable from 1 to 30 |
 | `HYPERLENS_AUTO_REFRESH` | `1` to refresh on first launch, `0` for manual refresh only |
+| `DATABASE_URL` | Optional PostgreSQL connection URL for persistent snapshots |
+| `DIRECT_URL` | Optional direct connection for importing a local snapshot |
+
+### Use Prisma Postgres
+
+Set `DATABASE_URL` to the pooled PostgreSQL URL in your runtime environment or the ignored `.env.local` file. The Node server creates the `hyperlens` schema on startup and restores its active snapshot from Postgres. The master CSV remains the input for each refresh.
+
+To seed an empty database from an existing local cache, run `npm run build` followed by `npm run db:import`. The importer includes the raw hyperpay-config cache, preserves the imported index version, and can be rerun safely with the same snapshot. It uses `DIRECT_URL` when available and otherwise uses `DATABASE_URL`. Start the application with `npm start` after the import.
+
+Postgres stores compressed snapshot parts and raw hyperpay-config content keyed by hash. Refreshes publish a complete snapshot transactionally. At startup the Node process rebuilds the in-memory reverse index from the active snapshot. This mode uses the existing long-running Node server.
+
+During verification with 1,088 client environments and 715 configurations, Postgres reported a peak database size of about 63 MiB across import and refresh. A restart restored the latest published snapshot.
+
+### Prepare a Vercel preview
+
+Run these commands from the workspace after the Postgres snapshot has been imported. The preparation command installs the hosted tables, seeds them from the active snapshot, and saves the master CSV and repository catalog in Postgres.
+
+```sh
+npm run build
+npm run db:prepare-vercel
+```
+
+In the Vercel project, set `DATABASE_URL` to the pooled connection string as a server-side variable for Preview. To enable HyperLens's browser login, also set `HYPERLENS_AUTH` to a strong `username:password` credential. With that variable unset, access is governed by the Vercel project's deployment settings. Use a Node.js LTS runtime. [vercel.json](vercel.json) configures the build, static assets, and API routes.
+
+Open the preview and check **Index health**. Click **Refresh** and run a search during the refresh. Then confirm a new index version appears and that it survives a redeploy. Vercel search reads the published Postgres index directly. The refresh function stores job state in Postgres and publishes a new snapshot and search index together. Refresh runs within the function's configured five-minute execution budget.
+
+The full saved dataset produced 2,018,497 indexed occurrences and used about 126 MB across the HyperLens tables in a local Postgres test. Vercel's builder also verified the Node.js function bundle and rewrites locally.
+
+Run `npm run db:prepare-vercel` again to apply changes to the seed CSV or repository catalog, then click **Refresh** in the preview to fetch configurations for any new rows. The standalone Node server uses its own in-memory search index, which it rebuilds from its configured snapshot at startup.
 
 ## Search behavior
 
@@ -43,7 +72,7 @@ The default server is loopback-only. For internal shared hosting, set `HYPERLENS
 | Refresh and HTTP transport | [server/refresh.ts](server/refresh.ts), [server/transport.ts](server/transport.ts) | Bounded concurrency, request timeouts, transient retry and rate-limit handling, global normalized URL deduplication, conditional HTTP revalidation, and content hashes. |
 | Static parsing and paths | [server/parser.ts](server/parser.ts), [server/paths.ts](server/paths.ts) | Uses Acorn to read the declaration behind the live `window.getMerchantConfig` wrapper, along with common literal, assignment, and export forms. Handles arrays, local literal bindings, and static spreads. No downloaded code is executed. |
 | Catalog and reverse index | [server/catalog.ts](server/catalog.ts), [server/index.ts](server/index.ts) | Joins repository definitions with observed paths. Shared configurations are indexed once; search expands matches through their MJOS references. |
-| Persistence | [server/cache.ts](server/cache.ts) | Stores a compressed snapshot of MJOS, parsed data, relationships, and coverage. Raw JavaScript is cached separately by content hash. Atomic replacement keeps the prior snapshot readable until publishing the new one succeeds. |
+| Persistence | [server/cache.ts](server/cache.ts), [server/postgres.ts](server/postgres.ts) | Stores compressed snapshots on disk or in Postgres. Raw JavaScript is cached separately by content hash. The prior snapshot remains readable until its replacement is published. |
 | API and interface | [server/http.ts](server/http.ts), [client/main.tsx](client/main.tsx) | Provides status, search, CSV export, catalog, details, and refresh endpoints. The React interface includes keyboard autocomplete, sortable and paginated results, a detail panel, and light and dark themes. |
 
 Refreshes re-read the source CSV and fetch each MJOS once per client, platform, and environment. URLs are extracted recursively and normalized to `configuration.js` with owner and version intact. Repeated archive and JavaScript references share one fetch and parse. On a failed fetch or parse HyperLens retains the previous usable record when available and labels the affected result stale. A partially available record still contributes its searchable configurations. Coverage distinguishes these cases, and the last successful refresh time advances only on a complete refresh.
@@ -57,6 +86,8 @@ Refreshes re-read the source CSV and fetch each MJOS once per client, platform, 
 ## Verification and limits
 
 `npm test` builds the project and runs 15 synthetic fixture tests, including wrapped merchant scripts, nested searches, shared references, typed values, failed refresh recovery, and cache revalidation. The local live run on 26 November 2026 (IST) loaded 544 CSV pairs, indexed 1,088 client environments and 715 distinct configurations, and reported zero fetch or parse failures. Headless Chrome verified desktop and mobile search, keyboard autocomplete, filters, details, CSV export, and a complete refresh launched from the dashboard.
+
+Set `HYPERLENS_TEST_DATABASE_URL` to a PostgreSQL connection URL to include the storage and hosted API integration tests. They use temporary schemas to verify snapshot publication, search and CSV parity, shared refresh progress, and duplicate-job prevention.
 
 Only statically declared properties can be indexed. Runtime functions, unknown computed keys, and unresolved spreads can hide data. Runtime expressions are visible as unresolved and their effective values cannot be filtered. The repository catalog imports statically readable JavaScript and structured rule metadata. It is not a complete compiler for PureScript definitions. The MVP uses a single Node process with a local cache and an in-memory index. The first full ingest used roughly 1 GiB of process memory before completion, so allow headroom for in-progress refreshes.
 

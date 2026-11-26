@@ -5,6 +5,7 @@ import type {
 } from '../shared/model.js';
 import { category, entries, formatPath, parsePath } from './paths.js';
 import { toJson } from './parser.js';
+import { csvHeader, csvLine } from './result-csv.js';
 
 type Reference = { mjos: MjosRecord; ref: ConfigurationRef; stale: boolean };
 type Posting = { config: number; value: StaticValue };
@@ -72,7 +73,7 @@ function matchesValue(node: StaticValue, wanted: Json): boolean {
   return node.value === wanted;
 }
 
-function abbreviate(value: StaticValue): string {
+export function abbreviate(value: StaticValue): string {
   if (value.type === 'array' && value.items.length > 5) return `[… ${value.items.length} items]`;
   if (value.type === 'object' && Object.keys(value.entries).length > 3) {
     return `{… ${Object.keys(value.entries).length} keys}`;
@@ -267,19 +268,13 @@ export class ConfigurationIndex {
   }
 
   *export(hits: Iterable<Hit>, includeValues: boolean): Generator<string> {
-    const cell = (value: string) => {
-      const numeric = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(value);
-      const safe = !numeric && /^\s*[=+@-]|^[\t\r\n]/u.test(value) ? "'" + value : value;
-      return '"' + safe.replaceAll('"', '""') + '"';
-    };
-    yield ['Client ID', 'Platform', 'Environment', 'Config path', 'Value type', ...(includeValues ? ['Config value'] : []),
-      'Hyperpay-config URL', 'Configuration owner', 'Version', 'Stale'].map(cell).join(',') + '\r\n';
+    yield csvHeader(includeValues);
     for (const { reference, path, posting } of hits) {
       const { mjos, ref, stale } = reference;
-      yield [
+      yield csvLine([
         mjos.clientId, mjos.platform, mjos.environment, path.path, posting.value.type,
         ...(includeValues ? [formatValue(posting.value, true)] : []), ref.normalizedUrl, ref.owner, ref.version, String(stale)
-      ].map(cell).join(',') + '\r\n';
+      ]);
     }
   }
 }
